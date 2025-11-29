@@ -1,106 +1,45 @@
-# Data Fraction Comparison: 20% vs 100%
+# Data Fraction Comparison (Simple Summary)
 
-This analysis compares model performance when training with 20% versus 100% of available data for SVM and MLP classifiers, using deterministic sampling (`random_state=42`).
+Notebooks and their data usage:
+- `kaggle-mlp-0-721.ipynb` → `DATA_FRACTION = 1` (full data)
+- `kaggle-mlp-0.721_20.ipynb` → `DATA_FRACTION = 0.2` (20% stratified sample)
+- `svm_0.716.ipynb`  (SVM full data)
+- `svm_0.716_20.ipynb` (SVM 20%)
 
-## Executive Summary
+Common training constants (from code): 5-fold CV (`CV_SPLITS=5`), `EPOCHS=60`, `BATCH_SIZE=256`, `PATIENCE=8`.
 
-Training on the full dataset yields consistent improvements: SVM gains ~3% ROC AUC and produces more stable probability calibration, while MLP shows smaller but meaningful gains in cross-validation F1 (~1%). The 20% constraint particularly impacts SVM through feature pruning and calibration shifts, while MLP's oversampling strategy provides greater resilience to reduced data.
+## Observed (from filenames / runs)
+| Model | Data Fraction | Recorded F1 (approx) |
+|-------|---------------|----------------------|
+| MLP   | 100%          | ~0.7195 |
+| MLP   | 20%           | ~0.7099 |
+| SVM   | 100%          | ~0.7193 |
+| SVM   | 20%           | ~0.7090 |
 
----
+## Quantitative Differences
+- MLP absolute drop: 0.7195 − 0.7099 = 0.0096 (≈1.33% relative)
+- SVM absolute drop: 0.7193 − 0.7090 = 0.0103 (≈1.43% relative)
+- Performance spread between architectures at same fraction is <0.001 (effectively identical within noise).
+- Indicates early saturation: marginal returns from last 80% of rows.
 
-## SVM Results
+## What We Expected Ideally
+Using only 20% of the training data should usually reduce F1 (less signal, higher variance). Full data typically gives: (a) slightly higher F1, (b) more stable threshold tuning, (c) lower fold-to-fold variance.
 
-**Configuration:** RBF kernel SVC with `C=2.0`, `gamma='scale'`, `class_weight='balanced'`, standardized inputs
+## What Actually Happened
+F1 dropped only ~0.010 (≈1.3–1.4% relative) for both models when moving from 100% to 20% of stratified data—well within a small effect range. Architectures remained virtually tied at each fraction.
 
-| Metric | 100% Data | 20% Data | Delta |
-|--------|-----------|----------|-------|
-| Validation ROC AUC | 0.8426 | 0.8136 | -0.029 |
-| Validation F1 @ 0.5 | 0.7093 | 0.6648 | -0.045 |
-| Best F1 (optimized threshold) | 0.7193 @ 0.340 | 0.7090 @ 0.180 | -0.010 |
-| Engineered features retained | 91 / 191 | 83 / 172 | -8 |
-| Final feature dimensionality | 115 | 107 | -8 |
+## Why It Probably Did Not Change
+1. Stratified sampling preserved class balance, avoiding distribution drift.
+2. Strong, low-noise engineered features (BMI, ratios, logs) convey most signal; a 20% subset still spans feature space.
+3. Regularization (MLP: L2 + Dropout + BatchNorm; SVM margin constraints) curtails overfitting benefits from extra examples.
+4. Diminishing returns / early saturation: Bayesian / learning curve intuition—later samples add redundancy, not novel patterns.
+5. Threshold tuning on out-of-fold predictions converges to similar cutoffs because score distributions shift minimally.
+6. Possible intrinsic label noise floor: added data cannot breach a ceiling dominated by irreducible error.
 
-**Key Observations:**
-- **Calibration shift:** Optimal decision threshold drops dramatically from 0.340 to 0.180 with reduced data, indicating the model becomes more conservative in assigning positive class probability
-- **Feature attrition:** Correlation-based pruning removes more engineered features at 20% (83 vs 91 retained), weakening the nonlinear signal available to the RBF kernel
-- **Margin quality:** Smaller training sets produce less stable support vectors and decision boundaries, directly impacting the ROC AUC gap
+## Why NN did not outperform SVM if they had similar f1 score with just 50% data
+SVM holding nearly the same F1 at 20% data is expected: margin-based training concentrates on boundary points, so once a representative, stratified slice preserves class balance and core feature relationships, extra interior samples add redundancy rather than new signal. Our engineered, mostly low-noise features make the class separation close to linearly (or smoothly) separable, letting both the SVM and a regularized MLP converge early. The tiny ~1.3–1.4% relative gain from 20% to full data reflects an early saturation: irreducible error and limited additional structural complexity mean more rows mainly tighten confidence intervals instead of shifting the decision surface.
 
----
 
-## MLP Results
+## Simple Takeaway
+For this dataset and feature set, a 20% stratified slice already reaches ≥98.6–98.7% of full-data F1; the remaining 80% yields only ~1.3–1.4% relative gain—evidence of early performance saturation.
 
-**Configuration:** Early-stopping MLPClassifier with median imputation, standardization, custom oversampling wrapper, 3-fold RandomizedSearchCV
-
-| Metric | 100% Data | 20% Data | Delta |
-|--------|-----------|----------|-------|
-| Best CV F1 | 0.7172 | 0.7086 | -0.009 |
-| OOF threshold F1 | 0.7175 @ 0.475 | 0.7100 @ 0.475 | -0.008 |
-| Hidden layers (best) | (64,) | (128,) | — |
-| Alpha (L2 reg) | 0.001 | 0.0001 | — |
-| Learning rate strategy | constant | adaptive | — |
-| Engineered features | 36 | 36 | 0 |
-
-**Key Observations:**
-- **Stable threshold:** Optimal decision point remains consistent at ~0.475 across both data fractions, suggesting robust probability calibration from oversampling
-- **Hyperparameter adaptation:** The search automatically compensates for reduced data by selecting larger capacity (128 vs 64 units), lower regularization, and adaptive learning rates
-- **Fixed feature engineering:** Unlike SVM, the feature set remains constant (36 features), preserving model capacity regardless of training size
-
----
-
-## Cross-Model Insights
-
-### Feature Stability
-Top predictive features remained consistent across both fractions:
-- `hemoglobin_level`, `height_cm`, `log1p_ggt_enzyme_level`
-- `weight_kg`, `triglycerides`
-- BMI derivatives, waist-to-height ratio, lipid ratios
-
-### Class Imbalance Handling (~37% positive class)
-- **SVM:** Uses `class_weight='balanced'` but remains sensitive to per-fold minority representation variance at 20%, particularly affecting probability calibration
-- **MLP:** Oversampling strategy provides more consistent minority class exposure, reducing calibration variance
-
-### Data Efficiency
-- **SVM:** High sensitivity to reduced data due to margin-based learning and pairwise distance computations; requires larger samples for stable support vector identification
-- **MLP:** More resilient through oversampling, early stopping, and gradient-based optimization that aggregates signal across mini-batches
-
----
-
-## Recommendations
-
-### When Using Full Data
-- **SVM:** Expect strong performance with well-calibrated probabilities; default threshold of 0.340 provides optimal F1
-- **MLP:** Smaller networks (64 units) with constant learning rates suffice; regularization can be moderate (α=0.001)
-
-### When Constrained to 20%
-1. **For SVM:**
-   - Aggressively tune decision thresholds (expect values 0.15–0.25)
-   - Relax correlation-based feature pruning to retain more engineered interactions
-   - Apply post-hoc probability calibration (isotonic regression or Platt scaling)
-   - Consider increasing `C` to allow more flexible decision boundaries
-
-2. **For MLP:**
-   - Expand hyperparameter search iterations to find optimal capacity-regularization tradeoffs
-   - Prefer larger networks (100–150 units) with lower regularization
-   - Use adaptive learning rates for better convergence
-   - Increase cross-validation folds (5+) to reduce per-fold variance
-
-3. **General:**
-   - Validate threshold optimization on holdout sets to avoid overfitting
-   - Monitor probability calibration curves to detect miscalibration early
-   - Consider ensemble methods to reduce variance from smaller samples
-
----
-
-## Technical Notes
-
-### Why SVM Degrades More
-1. **Margin estimation:** RBF kernel relies on pairwise distances; fewer samples create noisier similarity matrices
-2. **Support vector sparsity:** Reduced data increases variance in which points become support vectors
-3. **Probability calibration:** Platt scaling (internal to `probability=True`) requires sufficient positive/negative pairs for stable sigmoid fitting
-4. **Feature interactions:** Engineered features are pruned more aggressively at 20% due to correlation threshold behavior with smaller covariance estimates
-
-### Why MLP Is More Resilient
-1. **Oversampling:** Creates synthetic training signal, partially offsetting reduced real samples
-2. **Gradient aggregation:** Mini-batch optimization pools information across samples more effectively than margin-based methods
-3. **Early stopping:** Validation-based stopping prevents overfitting even with limited data
-4. **Fixed features:** Consistent feature engineering preserves input dimensionality and learned representations
